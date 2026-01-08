@@ -28,7 +28,10 @@
         storagePrefix: 'yt-tools-',
         panelId: 'yt-tools-panel',
         toggleId: 'yt-tools-toggle',
-        debug: true // Enable debug logging
+        debug: true, // Enable debug logging
+        // Update system configuration
+        githubVersionUrl: 'https://raw.githubusercontent.com/RynAgain/Youtube_Tampermonkey/main/YouTubeTools.user.js',
+        versionCheckInterval: 24 * 60 * 60 * 1000 // 24 hours in milliseconds
     };
 
     // =========================================================================
@@ -885,12 +888,11 @@
         name: 'Download',
         iconCreator: IconCreators.download,
         
-        // Cobalt API configuration
-        // Docs: https://github.com/imputnet/cobalt/blob/current/docs/api.md
-        // Public instances: https://instances.cobalt.best/
-        cobaltApiUrl: 'https://api.cobalt.tools/api/json',
+        // Cobalt web interface - no API auth required
+        // The web interface handles everything client-side
+        cobaltWebUrl: 'https://cobalt.tools',
         
-        // Video quality options
+        // Video quality options (for future API use)
         qualities: {
             'MAX': 'max',
             '2160p': '2160',
@@ -903,165 +905,115 @@
             '144p': '144'
         },
         
-        async requestDownload(url, options = {}) {
-            const {
-                isAudioOnly = false,   // true for audio only download
-                videoQuality = 'max',  // '144' to '4320' or 'max'
-            } = options;
+        // Open Cobalt web interface with the video URL pre-filled
+        openCobaltWeb(videoUrl, audioOnly = false) {
+            // Cobalt web interface accepts URL as hash parameter
+            // Format: https://cobalt.tools/#url=ENCODED_URL
+            const encodedUrl = encodeURIComponent(videoUrl);
+            const cobaltUrl = `${this.cobaltWebUrl}/#url=${encodedUrl}`;
             
-            // Build request body following Cobalt API spec
-            const requestBody = {
-                url: encodeURI(url),
-                vQuality: videoQuality,
-                filenamePattern: 'basic', // file name = video title
-                isAudioOnly: isAudioOnly,
-                disableMetadata: true     // privacy
-            };
-            
-            Utils.log('Cobalt API request:', requestBody);
-            
-            return new Promise((resolve, reject) => {
-                GM_xmlhttpRequest({
-                    method: 'POST',
-                    url: this.cobaltApiUrl,
-                    headers: {
-                        'Cache-Control': 'no-cache',
-                        'Accept': 'application/json',
-                        'Content-Type': 'application/json'
-                    },
-                    data: JSON.stringify(requestBody),
-                    onload: (response) => {
-                        try {
-                            const data = JSON.parse(response.responseText);
-                            Utils.log('Cobalt API response:', data);
-                            
-                            if (data?.url) {
-                                // Success - we have a download URL
-                                resolve(data);
-                            } else if (data.status === 'error') {
-                                reject(new Error(data.text || 'Unknown error from Cobalt'));
-                            } else if (data.status === 'picker') {
-                                // Multiple options available (e.g., video with multiple audio tracks)
-                                resolve(data);
-                            } else {
-                                reject(new Error('No download URL received'));
-                            }
-                        } catch (e) {
-                            Utils.error('Failed to parse Cobalt response:', e);
-                            reject(new Error('Failed to parse API response'));
-                        }
-                    },
-                    onerror: (error) => {
-                        Utils.error('Cobalt API error:', error);
-                        reject(new Error('Network error connecting to Cobalt'));
-                    }
-                });
-            });
+            Utils.log('Opening Cobalt web interface:', cobaltUrl);
+            window.open(cobaltUrl, '_blank');
         },
         
-        openDownloadUrl(url) {
-            // Open the download URL in a new tab
-            window.open(url, '_blank');
+        // Copy video URL to clipboard for manual paste into Cobalt
+        async copyUrlForCobalt(videoUrl) {
+            try {
+                GM_setClipboard(videoUrl, 'text');
+                return true;
+            } catch (e) {
+                try {
+                    await navigator.clipboard.writeText(videoUrl);
+                    return true;
+                } catch (e2) {
+                    Utils.error('Clipboard error:', e2);
+                    return false;
+                }
+            }
         },
         
-        async handleDownload(mode, button, statusContainer) {
+        handleOpenCobalt(button, statusContainer) {
             // Get clean video URL (remove playlist params, etc.)
             const videoUrl = window.location.href.split('&list')[0].split('&t=')[0];
             
             // Save original button content
             const originalChildren = Array.from(button.childNodes).map(n => n.cloneNode(true));
             
-            // Update button to loading state
+            // Update button state
             button.textContent = '';
-            button.appendChild(IconCreators.loader());
-            const loadingText = document.createElement('span');
-            loadingText.textContent = 'Processing...';
-            button.appendChild(loadingText);
-            button.disabled = true;
+            button.appendChild(IconCreators.check());
+            const successText = document.createElement('span');
+            successText.textContent = 'Opening...';
+            button.appendChild(successText);
+            button.classList.add('yt-tools-btn-success');
             
             // Clear status container
             while (statusContainer.firstChild) {
                 statusContainer.removeChild(statusContainer.firstChild);
             }
             
-            try {
-                const options = {
-                    videoQuality: 'max'
-                };
+            // Open Cobalt web interface
+            this.openCobaltWeb(videoUrl);
+            
+            // Show status
+            const statusDiv = Utils.createElement('div', { className: 'yt-tools-status yt-tools-status-success' });
+            statusDiv.appendChild(IconCreators.externalLink());
+            const statusText = document.createElement('span');
+            statusText.textContent = 'Cobalt opened - select quality there';
+            statusDiv.appendChild(statusText);
+            statusContainer.appendChild(statusDiv);
+            
+            // Reset button after delay
+            setTimeout(() => {
+                button.textContent = '';
+                originalChildren.forEach(child => button.appendChild(child));
+                button.classList.remove('yt-tools-btn-success');
+            }, 2000);
+        },
+        
+        async handleCopyUrl(button, statusContainer) {
+            // Get clean video URL
+            const videoUrl = window.location.href.split('&list')[0].split('&t=')[0];
+            
+            // Save original button content
+            const originalChildren = Array.from(button.childNodes).map(n => n.cloneNode(true));
+            
+            // Clear status container
+            while (statusContainer.firstChild) {
+                statusContainer.removeChild(statusContainer.firstChild);
+            }
+            
+            const success = await this.copyUrlForCobalt(videoUrl);
+            
+            if (success) {
+                button.textContent = '';
+                button.appendChild(IconCreators.check());
+                const successText = document.createElement('span');
+                successText.textContent = 'Copied';
+                button.appendChild(successText);
+                button.classList.add('yt-tools-btn-success');
                 
-                if (mode === 'audio') {
-                    options.isAudioOnly = true;
-                } else {
-                    // video+audio (Cobalt doesn't support video-only for YouTube)
-                    options.isAudioOnly = false;
-                }
-                
-                const result = await this.requestDownload(videoUrl, options);
-                
-                if (result.url) {
-                    // Success - open download
-                    this.openDownloadUrl(result.url);
-                    
-                    button.textContent = '';
-                    button.appendChild(IconCreators.check());
-                    const successText = document.createElement('span');
-                    successText.textContent = 'Opening...';
-                    button.appendChild(successText);
-                    button.classList.add('yt-tools-btn-success');
-                    
-                    const statusDiv = Utils.createElement('div', { className: 'yt-tools-status yt-tools-status-success' });
-                    statusDiv.appendChild(IconCreators.externalLink());
-                    const statusText = document.createElement('span');
-                    statusText.textContent = 'Download started in new tab';
-                    statusDiv.appendChild(statusText);
-                    statusContainer.appendChild(statusDiv);
-                } else if (result.picker) {
-                    // Multiple options - just open the first one for now
-                    const firstOption = result.picker[0];
-                    if (firstOption?.url) {
-                        this.openDownloadUrl(firstOption.url);
-                        
-                        button.textContent = '';
-                        button.appendChild(IconCreators.check());
-                        const successText = document.createElement('span');
-                        successText.textContent = 'Opening...';
-                        button.appendChild(successText);
-                        button.classList.add('yt-tools-btn-success');
-                        
-                        const statusDiv = Utils.createElement('div', { className: 'yt-tools-status yt-tools-status-success' });
-                        statusDiv.appendChild(IconCreators.externalLink());
-                        const statusText = document.createElement('span');
-                        statusText.textContent = 'Download started in new tab';
-                        statusDiv.appendChild(statusText);
-                        statusContainer.appendChild(statusDiv);
-                    }
-                } else {
-                    throw new Error('No download URL received');
-                }
-            } catch (error) {
-                Utils.error('Download error:', error);
+                const statusDiv = Utils.createElement('div', { className: 'yt-tools-status yt-tools-status-success' });
+                statusDiv.appendChild(IconCreators.check());
+                const statusText = document.createElement('span');
+                statusText.textContent = 'URL copied - paste into cobalt.tools';
+                statusDiv.appendChild(statusText);
+                statusContainer.appendChild(statusDiv);
+            } else {
                 button.textContent = '';
                 button.appendChild(IconCreators.warning());
                 const failText = document.createElement('span');
                 failText.textContent = 'Failed';
                 button.appendChild(failText);
                 button.classList.add('yt-tools-btn-error');
-                
-                const statusDiv = Utils.createElement('div', { className: 'yt-tools-status yt-tools-status-error' });
-                statusDiv.appendChild(IconCreators.warning());
-                const statusText = document.createElement('span');
-                statusText.textContent = error.message;
-                statusDiv.appendChild(statusText);
-                statusContainer.appendChild(statusDiv);
             }
             
             // Reset button after delay
             setTimeout(() => {
                 button.textContent = '';
                 originalChildren.forEach(child => button.appendChild(child));
-                button.disabled = false;
                 button.classList.remove('yt-tools-btn-success', 'yt-tools-btn-error');
-            }, 3000);
+            }, 2000);
         },
         
         render(container) {
@@ -1080,32 +1032,32 @@
             // Status container (shared by all buttons)
             const statusContainer = Utils.createElement('div', { className: 'yt-tools-status-container' });
             
-            // Video button (includes audio - max quality)
-            const videoBtn = Utils.createElement('button', {
-                className: 'yt-tools-btn',
+            // Open Cobalt button (primary action)
+            const cobaltBtn = Utils.createElement('button', {
+                className: 'yt-tools-btn yt-tools-btn-primary',
                 style: { marginBottom: '8px' },
-                onClick: async () => {
-                    await this.handleDownload('video', videoBtn, statusContainer);
+                onClick: () => {
+                    this.handleOpenCobalt(cobaltBtn, statusContainer);
                 }
             });
-            videoBtn.appendChild(IconCreators.video());
-            const videoBtnText = document.createElement('span');
-            videoBtnText.textContent = 'Video (Max Quality)';
-            videoBtn.appendChild(videoBtnText);
-            section.appendChild(videoBtn);
+            cobaltBtn.appendChild(IconCreators.externalLink());
+            const cobaltBtnText = document.createElement('span');
+            cobaltBtnText.textContent = 'Open in Cobalt';
+            cobaltBtn.appendChild(cobaltBtnText);
+            section.appendChild(cobaltBtn);
             
-            // Audio only button
-            const audioBtn = Utils.createElement('button', {
+            // Copy URL button (secondary action)
+            const copyBtn = Utils.createElement('button', {
                 className: 'yt-tools-btn',
                 onClick: async () => {
-                    await this.handleDownload('audio', audioBtn, statusContainer);
+                    await this.handleCopyUrl(copyBtn, statusContainer);
                 }
             });
-            audioBtn.appendChild(IconCreators.music());
-            const audioBtnText = document.createElement('span');
-            audioBtnText.textContent = 'Audio Only (MP3)';
-            audioBtn.appendChild(audioBtnText);
-            section.appendChild(audioBtn);
+            copyBtn.appendChild(IconCreators.copy());
+            const copyBtnText = document.createElement('span');
+            copyBtnText.textContent = 'Copy URL for Cobalt';
+            copyBtn.appendChild(copyBtnText);
+            section.appendChild(copyBtn);
             
             // Add status container at the end
             section.appendChild(statusContainer);
@@ -1464,6 +1416,299 @@
     };
 
     // =========================================================================
+    // UPDATE SYSTEM
+    // =========================================================================
+    
+    const UpdateSystem = {
+        versionCheckInterval: null,
+        
+        init() {
+            Utils.log('Starting automatic version checking...');
+            
+            // Check after 5 seconds on startup (don't show "no update" message)
+            setTimeout(() => {
+                this.checkForUpdates(false);
+            }, 5000);
+            
+            // Set up periodic checking
+            this.versionCheckInterval = setInterval(() => {
+                this.checkForUpdates(false);
+            }, CONFIG.versionCheckInterval);
+            
+            Utils.log('Version checking initialized');
+        },
+        
+        async checkForUpdates(showNoUpdateMessage = false) {
+            try {
+                const lastCheck = Storage.get('lastVersionCheck', 0);
+                const now = Date.now();
+                
+                // Skip if checked recently (unless manual check)
+                if (!showNoUpdateMessage && (now - lastCheck) < CONFIG.versionCheckInterval) {
+                    Utils.log('Skipping version check - checked recently');
+                    return;
+                }
+                
+                Utils.log('Checking for updates...');
+                
+                const latestVersion = await this.fetchLatestVersion();
+                Storage.set('lastVersionCheck', now);
+                
+                if (!latestVersion) {
+                    if (showNoUpdateMessage) {
+                        this.showMessage('Could not fetch version information', 'error');
+                    }
+                    return;
+                }
+                
+                const skippedVersion = Storage.get('skippedVersion', null);
+                
+                if (this.isNewerVersion(latestVersion, CONFIG.version)) {
+                    // Check if user skipped this version
+                    if (skippedVersion === latestVersion && !showNoUpdateMessage) {
+                        Utils.log(`Version ${latestVersion} was skipped by user`);
+                        return;
+                    }
+                    
+                    this.showUpdateNotification(latestVersion);
+                } else if (showNoUpdateMessage) {
+                    this.showMessage(`You're running the latest version (${CONFIG.version})`, 'success');
+                }
+                
+            } catch (error) {
+                Utils.error('Update check failed:', error);
+                if (showNoUpdateMessage) {
+                    this.showMessage(`Failed to check for updates: ${error.message}`, 'error');
+                }
+            }
+        },
+        
+        fetchLatestVersion() {
+            return new Promise((resolve, reject) => {
+                GM_xmlhttpRequest({
+                    method: 'GET',
+                    url: CONFIG.githubVersionUrl + '?t=' + Date.now(), // Cache bust
+                    headers: {
+                        'Cache-Control': 'no-cache'
+                    },
+                    onload: (response) => {
+                        if (response.status === 200) {
+                            // Extract version from @version tag
+                            const versionMatch = response.responseText.match(/@version\s+([^\s]+)/);
+                            if (versionMatch) {
+                                resolve(versionMatch[1].trim());
+                            } else {
+                                resolve(null);
+                            }
+                        } else {
+                            reject(new Error(`HTTP ${response.status}`));
+                        }
+                    },
+                    onerror: (error) => {
+                        reject(new Error('Network error'));
+                    }
+                });
+            });
+        },
+        
+        isNewerVersion(latest, current) {
+            const latestParts = latest.split('.').map(part => parseInt(part, 10) || 0);
+            const currentParts = current.split('.').map(part => parseInt(part, 10) || 0);
+            
+            const maxLength = Math.max(latestParts.length, currentParts.length);
+            while (latestParts.length < maxLength) latestParts.push(0);
+            while (currentParts.length < maxLength) currentParts.push(0);
+            
+            for (let i = 0; i < maxLength; i++) {
+                if (latestParts[i] > currentParts[i]) return true;
+                if (latestParts[i] < currentParts[i]) return false;
+            }
+            
+            return false;
+        },
+        
+        showUpdateNotification(latestVersion) {
+            // Create modal overlay
+            const overlay = Utils.createElement('div', {
+                className: 'yt-tools-root',
+                style: {
+                    position: 'fixed',
+                    top: '0',
+                    left: '0',
+                    right: '0',
+                    bottom: '0',
+                    background: 'rgba(0, 0, 0, 0.7)',
+                    zIndex: '2147483647',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center'
+                }
+            });
+            
+            // Create modal
+            const modal = Utils.createElement('div', {
+                style: {
+                    background: 'var(--tm-bg-secondary)',
+                    border: '1px solid var(--tm-border-subtle)',
+                    borderRadius: 'var(--tm-radius-md)',
+                    padding: '24px',
+                    maxWidth: '400px',
+                    width: '90%',
+                    boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5)'
+                }
+            });
+            
+            // Header
+            const header = Utils.createElement('div', {
+                style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '12px',
+                    marginBottom: '16px'
+                }
+            });
+            header.appendChild(IconCreators.download(24));
+            const title = Utils.createElement('h2', {
+                textContent: 'Update Available',
+                style: {
+                    margin: '0',
+                    fontSize: '18px',
+                    fontWeight: '500',
+                    color: 'var(--tm-text-primary)'
+                }
+            });
+            header.appendChild(title);
+            modal.appendChild(header);
+            
+            // Version info
+            const versionInfo = Utils.createElement('div', {
+                style: {
+                    background: 'var(--tm-bg-primary)',
+                    borderRadius: 'var(--tm-radius-sm)',
+                    padding: '12px',
+                    marginBottom: '16px'
+                }
+            });
+            
+            const currentLine = Utils.createElement('div', {
+                style: { marginBottom: '8px', color: 'var(--tm-text-secondary)', fontSize: '14px' }
+            });
+            currentLine.appendChild(document.createTextNode('Current: '));
+            const currentSpan = Utils.createElement('span', {
+                textContent: CONFIG.version,
+                style: { color: 'var(--tm-text-primary)' }
+            });
+            currentLine.appendChild(currentSpan);
+            versionInfo.appendChild(currentLine);
+            
+            const latestLine = Utils.createElement('div', {
+                style: { color: 'var(--tm-text-secondary)', fontSize: '14px' }
+            });
+            latestLine.appendChild(document.createTextNode('Latest: '));
+            const latestSpan = Utils.createElement('span', {
+                textContent: latestVersion,
+                style: { color: 'var(--tm-accent-primary)', fontWeight: '500' }
+            });
+            latestLine.appendChild(latestSpan);
+            versionInfo.appendChild(latestLine);
+            
+            modal.appendChild(versionInfo);
+            
+            // Buttons
+            const buttonContainer = Utils.createElement('div', {
+                style: {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '8px'
+                }
+            });
+            
+            // Update button
+            const updateBtn = Utils.createElement('button', {
+                className: 'yt-tools-btn yt-tools-btn-primary',
+                onClick: () => {
+                    window.open(CONFIG.githubVersionUrl, '_blank');
+                    overlay.remove();
+                }
+            });
+            updateBtn.appendChild(IconCreators.externalLink());
+            const updateText = document.createElement('span');
+            updateText.textContent = 'Update Now';
+            updateBtn.appendChild(updateText);
+            buttonContainer.appendChild(updateBtn);
+            
+            // Remind later button
+            const remindBtn = Utils.createElement('button', {
+                className: 'yt-tools-btn',
+                onClick: () => {
+                    Storage.set('lastVersionCheck', 0); // Reset to check again soon
+                    overlay.remove();
+                }
+            });
+            const remindText = document.createElement('span');
+            remindText.textContent = 'Remind Me Later';
+            remindBtn.appendChild(remindText);
+            buttonContainer.appendChild(remindBtn);
+            
+            // Skip version button
+            const skipBtn = Utils.createElement('button', {
+                className: 'yt-tools-btn',
+                style: { opacity: '0.7' },
+                onClick: () => {
+                    Storage.set('skippedVersion', latestVersion);
+                    overlay.remove();
+                }
+            });
+            const skipText = document.createElement('span');
+            skipText.textContent = 'Skip This Version';
+            skipBtn.appendChild(skipText);
+            buttonContainer.appendChild(skipBtn);
+            
+            modal.appendChild(buttonContainer);
+            overlay.appendChild(modal);
+            
+            // Close on overlay click
+            overlay.addEventListener('click', (e) => {
+                if (e.target === overlay) {
+                    overlay.remove();
+                }
+            });
+            
+            document.body.appendChild(overlay);
+        },
+        
+        showMessage(message, type = 'info') {
+            // Simple toast notification
+            const toast = Utils.createElement('div', {
+                className: 'yt-tools-root',
+                style: {
+                    position: 'fixed',
+                    bottom: '20px',
+                    left: '50%',
+                    transform: 'translateX(-50%)',
+                    background: type === 'success' ? 'var(--tm-accent-success)' :
+                               type === 'error' ? 'var(--tm-accent-error)' : 'var(--tm-bg-elevated)',
+                    color: 'var(--tm-text-primary)',
+                    padding: '12px 24px',
+                    borderRadius: 'var(--tm-radius-md)',
+                    boxShadow: '0 4px 12px rgba(0, 0, 0, 0.4)',
+                    zIndex: '2147483647',
+                    fontSize: '14px'
+                },
+                textContent: message
+            });
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.style.opacity = '0';
+                toast.style.transition = 'opacity 0.3s ease';
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+    };
+
+    // =========================================================================
     // INITIALIZATION
     // =========================================================================
     
@@ -1482,10 +1727,12 @@
         // Wait for body to be ready
         if (document.body) {
             PanelUI.init();
+            UpdateSystem.init();
             console.log('[YouTube Tools] UI initialized - look for blue wrench icon on left side of screen');
         } else {
             document.addEventListener('DOMContentLoaded', () => {
                 PanelUI.init();
+                UpdateSystem.init();
                 console.log('[YouTube Tools] UI initialized (after DOMContentLoaded) - look for blue wrench icon on left side of screen');
             });
         }
